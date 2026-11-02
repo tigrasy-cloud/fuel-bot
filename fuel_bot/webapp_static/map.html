@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Карта АЗС — где есть топливо</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+  html, body, #map { height: 100%; margin: 0; padding: 0; }
+  body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .legend {
+    position: absolute; bottom: 16px; left: 16px; z-index: 1000;
+    background: rgba(20,22,28,.92); color: #fff; padding: 10px 12px;
+    border-radius: 12px; font-size: 13px; line-height: 1.7;
+  }
+  .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; }
+  #status-bar {
+    position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+    z-index: 1000; background: rgba(20,22,28,.92); color: #fff;
+    padding: 6px 14px; border-radius: 999px; font-size: 13px; white-space: nowrap;
+  }
+  .popup h3 { margin: 0 0 4px; font-size: 15px; }
+  .popup p { margin: 2px 0; font-size: 13px; }
+  .popup a { color: #1a73e8; }
+</style>
+</head>
+<body>
+<div id="status-bar">Загружаю АЗС…</div>
+<div id="map"></div>
+<div class="legend">
+  <span class="dot" style="background:#30D56B"></span>Есть топливо<br>
+  <span class="dot" style="background:#FF7A1A"></span>Очередь<br>
+  <span class="dot" style="background:#FACC15"></span>Осталось мало<br>
+  <span class="dot" style="background:#FF4D5A"></span>Топлива нет<br>
+  <span class="dot" style="background:#22C3E6"></span>Только ДТ<br>
+  <span class="dot" style="background:#8A94A6"></span>Нет данных
+</div>
+<script>
+try { Telegram.WebApp.ready(); Telegram.WebApp.expand(); } catch (e) {}
+
+const COLORS = {
+  yes: '#30D56B', queue: '#FF7A1A', low: '#FACC15',
+  no: '#FF4D5A', dtonly: '#22C3E6', changing: '#F5A623',
+  none: '#8A94A6', unknown: '#8A94A6'
+};
+const STATUS_TEXT = {
+  yes: 'Есть топливо', queue: 'Очередь', low: 'Осталось мало',
+  no: 'Топлива нет', dtonly: 'Только ДТ', changing: 'Статус меняется',
+  none: 'Нет данных', unknown: 'Нет данных'
+};
+
+const map = L.map('map', { zoomControl: true }).setView([55.75, 37.62], 11);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19, attribution: '&copy; OpenStreetMap'
+}).addTo(map);
+
+if (navigator.geolocation) {
+  navigator.geolocation.getCurrentPosition(
+    pos => map.setView([pos.coords.latitude, pos.coords.longitude], 13),
+    () => {}, { timeout: 5000 }
+  );
+}
+
+const markers = L.layerGroup().addTo(map);
+const statusBar = document.getElementById('status-bar');
+let fetchTimer = null;
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g,
+    c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+async function loadStations() {
+  const b = map.getBounds();
+  const url = `/api/stations?lat1=${b.getSouth().toFixed(4)}&lon1=${b.getWest().toFixed(4)}` +
+              `&lat2=${b.getNorth().toFixed(4)}&lon2=${b.getEast().toFixed(4)}`;
+  statusBar.textContent = 'Загружаю АЗС…';
+  try {
+    const resp = await fetch(url);
+    if (!resp.ok) throw new Error('HTTP ' + resp.status);
+    const stations = await resp.json();
+    markers.clearLayers();
+    let counts = { yes: 0, queue: 0, low: 0, no: 0 };
+    for (const s of (Array.isArray(stations) ? stations : [])) {
+      if (s.lat == null || s.lon == null) continue;
+      const st = s.status || 'none';
+      if (counts[st] !== undefined) counts[st]++;
+      const prices = s.prices_now
+        ? Object.entries(s.prices_now).map(([f, i]) => `${esc(f)} ${i.p}₽`).join(', ')
+        : '';
+      const popup = `<div class="popup">
+        <h3>${esc(s.brand || s.name || 'АЗС')}</h3>
+        <p><b>${STATUS_TEXT[st] || 'Нет данных'}</b></p>
+        ${s.addr ? `<p>📍 ${esc(s.addr)}</p>` : ''}
+        ${prices ? `<p>⛽ ${prices}</p>` : ''}
+        <p><a href="https://yandex.ru/maps/?rtext=~${s.lat},${s.lon}&rtt=auto" target="_blank">Маршрут (Яндекс)</a></p>
+      </div>`;
+      L.circleMarker([s.lat, s.lon], {
+        radius: 8, weight: 2, color: '#fff', opacity: .9,
+        fillColor: COLORS[st] || COLORS.none, fillOpacity: .95
+      }).bindPopup(popup).addTo(markers);
+    }
+    statusBar.textContent =
+      `АЗС: ${stations.length} · 🟢 ${counts.yes} · 🟠 ${counts.queue} · 🟡 ${counts.low} · 🔴 ${counts.no}`;
+  } catch (e) {
+    statusBar.textContent = 'Не удалось загрузить АЗС. Потяни карту — попробую снова.';
+  }
+}
+
+map.on('moveend', () => {
+  clearTimeout(fetchTimer);
+  fetchTimer = setTimeout(loadStations, 350);
+});
+loadStations();
+</script>
+</body>
+</html>
