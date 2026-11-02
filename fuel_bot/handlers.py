@@ -629,19 +629,20 @@ router.callback_query.middleware(_track_user_middleware)
 
 
 def _admin_ids() -> set[int]:
-    """Читает ADMIN_IDS из .env при каждом вызове — рестарт не нужен."""
-    env_path = Path(__file__).resolve().parent / ".env"
-    try:
-        for line in env_path.read_text(encoding="utf-8").splitlines():
-            if line.startswith("ADMIN_IDS="):
-                return {
-                    int(x)
-                    for x in line.split("=", 1)[1].split(",")
-                    if x.strip().isdigit()
-                }
-    except OSError:
-        pass
-    return set()
+    """Читает ADMIN_IDS из переменной окружения или .env при каждом вызове — рестарт не нужен."""
+    raw = os.environ.get("ADMIN_IDS")
+    if raw is None:
+        env_path = Path(__file__).resolve().parent / ".env"
+        try:
+            for line in env_path.read_text(encoding="utf-8").splitlines():
+                if line.startswith("ADMIN_IDS="):
+                    raw = line.split("=", 1)[1]
+                    break
+        except OSError:
+            pass
+    if not raw:
+        return set()
+    return {int(x) for x in raw.split(",") if x.strip().isdigit()}
 
 
 @router.message(Command("stats"))
